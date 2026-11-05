@@ -4,12 +4,12 @@ A sample chat app for the Metabase Agent API. Ask natural language questions abo
 
 ## Prerequisites
 
-- Metabase v59+ (Enterprise) with the `agent-api` feature flag
+- A Metabase instance with the Agent API enabled under **Admin > AI > MCP**
 - Anthropic API key
 
 ## Metabase setup
 
-**Enable JWT authentication**: Admin Settings > Authentication > JWT. Click "Generate key" and copy the secret.
+Use the email address and password of an existing Metabase user. The server logs in with `POST /api/session` and uses the returned session token for Agent API requests. API-key authentication is a separate alternative and isn't used by this setup.
 
 ## Configuration
 
@@ -22,9 +22,10 @@ Fill in your `.env`:
 | Variable | Description |
 |----------|-------------|
 | `METABASE_INSTANCE_URL` | Your Metabase URL (no trailing slash) |
-| `METABASE_JWT_SHARED_SECRET` | JWT signing key from admin settings |
-| `METABASE_USER_EMAIL` | Email of an existing Metabase user |
+| `METABASE_USER_EMAIL` | Email/username of an existing Metabase user |
+| `METABASE_USER_PASSWORD` | Password for that Metabase user |
 | `ANTHROPIC_API_KEY` | Your Anthropic API key |
+| `X-API-KEY` | API key used by the dashboard-list service |
 
 ## Run
 
@@ -33,7 +34,7 @@ npm run install:all
 npm run dev
 ```
 
-Open [http://localhost:3100](http://localhost:3100).
+Open [http://localhost:3100](http://localhost:3100). Choose a dashboard from the dropdown; its ID is stored in the URL as `dashboardId`, and chat is scoped to the selected dashboard. Query tools are read-only; dashboard edits are not available.
 
 ## Reporting issues
 

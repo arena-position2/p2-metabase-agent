@@ -63,6 +63,22 @@ body {
   color: var(--text-tertiary);
 }
 
+.dashboard-select {
+  margin-left: auto;
+  max-width: 18rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  font: inherit;
+}
+
+.dashboard-error {
+  margin: 0.75rem 1.5rem 0;
+  max-width: none;
+}
+
 /* --- Message list --- */
 
 .messages {

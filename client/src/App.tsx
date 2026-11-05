@@ -6,13 +6,13 @@ import remarkGfm from "remark-gfm";
 
 const TOOL_LABELS: Record<string, string> = {
   search_data_sources: "Searching for data sources",
-  get_table_details: "Inspecting table",
-  get_metric_details: "Inspecting metric",
+  get_data_source_details: "Inspecting dashboard data",
   get_field_values: "Fetching field values",
   run_query: "Running query",
 };
 
-type EntityNames = { tables: Record<number, string>; metrics: Record<number, string> };
+type EntityNames = Record<string, string>;
+type Dashboard = { id: number; name: string };
 
 function extractEntityNames(messages: UIMessage[], into: EntityNames): void {
   for (const msg of messages) {
@@ -21,24 +21,41 @@ function extractEntityNames(messages: UIMessage[], into: EntityNames): void {
       const output = part.output as Record<string, unknown>;
 
       // Extract from search results
+      if (Array.isArray(output.data)) {
+        for (const entity of output.data) {
+          if (!entity || typeof entity !== "object") continue;
+          const item = entity as Record<string, unknown>;
+          if (typeof item.id !== "number" || typeof item.name !== "string") {
+            continue;
+          }
+          if (typeof item.type === "string") {
+            into[`${item.type}:${item.id}`] = item.name;
+          }
+        }
+      }
+
+      // Support the legacy search response shape.
       if (Array.isArray(output.tables)) {
         for (const t of output.tables) {
-          if (t.id && t.name) into.tables[t.id] = t.name;
+          if (t.id && t.name) into[`table:${t.id}`] = t.name;
         }
       }
       if (Array.isArray(output.metrics)) {
         for (const m of output.metrics) {
-          if (m.id && m.name) into.metrics[m.id] = m.name;
+          if (m.id && m.name) into[`metric:${m.id}`] = m.name;
         }
       }
 
-      // Extract from table/metric detail responses
+      // Extract from data-source detail responses.
       if (output.id && output.name) {
         const toolName = part.type?.replace("tool-", "");
-        if (toolName === "get_table_details") {
-          into.tables[output.id as number] = output.name as string;
-        } else if (toolName === "get_metric_details") {
-          into.metrics[output.id as number] = output.name as string;
+        if (toolName === "get_data_source_details") {
+          const input = "input" in part
+            ? (part.input as Record<string, unknown>)
+            : undefined;
+          if (input?.source_type) {
+            into[`${input.source_type}:${output.id}`] = output.name as string;
+          }
         }
       }
     }
@@ -59,13 +76,10 @@ function getToolDetail(
       ];
       return terms.length > 0 ? terms.map((t) => `"${t}"`).join(", ") : null;
     }
-    case "get_table_details": {
-      const id = input.table_id as number;
-      return entityNames.tables[id] ?? null;
-    }
-    case "get_metric_details": {
-      const id = input.metric_id as number;
-      return entityNames.metrics[id] ?? null;
+    case "get_data_source_details": {
+      const sourceType = input.source_type as string;
+      const sourceId = input.source_id as number;
+      return entityNames[`${sourceType}:${sourceId}`] ?? null;
     }
     default:
       return null;
@@ -97,19 +111,103 @@ function ToolCallStatus({
 
 export default function App() {
   const [input, setInput] = useState("");
+  const [dashboards, setDashboards] = useState<Dashboard[]>([]);
+  const [dashboardLoading, setDashboardLoading] = useState(true);
+  const [dashboardError, setDashboardError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const entityNamesRef = useRef<EntityNames>({ tables: {}, metrics: {} });
+  const searchParams = new URLSearchParams(window.location.search);
+  const initialDashboardId =
+    searchParams.get("dashboardId") ?? searchParams.get("dashboard_id");
+  const [dashboardId, setDashboardId] = useState(
+    initialDashboardId !== null &&
+      /^\d+$/.test(initialDashboardId) &&
+      Number(initialDashboardId) > 0
+      ? initialDashboardId
+      : "",
+  );
+  const validDashboardId = dashboards.some(
+    (dashboard) => String(dashboard.id) === dashboardId,
+  );
+  const entityNamesRef = useMemo<EntityNames>(() => ({}), [dashboardId]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    async function loadDashboards() {
+      try {
+        const response = await fetch("/api/dashboards", {
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new Error(`Dashboard list request failed (${response.status})`);
+        }
+
+        const result: unknown = await response.json();
+        if (
+          typeof result !== "object" ||
+          result === null ||
+          !("data" in result) ||
+          !Array.isArray(result.data) ||
+          !result.data.every(
+            (dashboard) =>
+              typeof dashboard === "object" &&
+              dashboard !== null &&
+              "id" in dashboard &&
+              Number.isSafeInteger(dashboard.id) &&
+              "name" in dashboard &&
+              typeof dashboard.name === "string",
+          )
+        ) {
+          throw new Error("Dashboard list response was invalid");
+        }
+
+        setDashboards(
+          result.data.map(({ id, name }) => ({ id, name })),
+        );
+        setDashboardError(null);
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        setDashboardError(
+          error instanceof Error ? error.message : "Unable to load dashboards",
+        );
+      } finally {
+        if (!controller.signal.aborted) setDashboardLoading(false);
+      }
+    }
+
+    void loadDashboards();
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    if (dashboardLoading || dashboards.length === 0 || validDashboardId) return;
+    setDashboardId(String(dashboards[0].id));
+  }, [dashboardLoading, dashboards, validDashboardId]);
+
+  useEffect(() => {
+    if (!dashboardId) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set("dashboardId", dashboardId);
+    url.searchParams.delete("dashboard_id");
+    window.history.replaceState({}, "", url);
+  }, [dashboardId]);
 
   const transport = useMemo(
-    () => new DefaultChatTransport({ api: "/api/chat" }),
-    [],
+    () => new DefaultChatTransport({
+      api: "/api/chat",
+      body: { dashboardId },
+    }),
+    [dashboardId],
   );
 
-  const { messages, sendMessage, status, stop, error } = useChat({ transport });
+  const { messages, sendMessage, status, stop, error } = useChat({
+    id: `dashboard-${dashboardId ?? "missing"}`,
+    transport,
+  });
 
   const isLoading = status === "streaming" || status === "submitted";
-  extractEntityNames(messages, entityNamesRef.current);
-  const entityNames = entityNamesRef.current;
+  extractEntityNames(messages, entityNamesRef);
+  const entityNames = entityNamesRef;
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -127,8 +225,35 @@ export default function App() {
     <div className="app">
       <header className="app-header">
         <h1>Metabase Agent</h1>
-        <p>Ask questions about your data</p>
+        <p>
+          {validDashboardId
+            ? "Ask questions about this dashboard"
+            : "Choose a dashboard to start chatting"}
+        </p>
+        <select
+          className="dashboard-select"
+          aria-label="Select dashboard"
+          value={dashboardId}
+          disabled={dashboardLoading || dashboards.length === 0}
+          onChange={(event) => setDashboardId(event.target.value)}
+        >
+          <option value="">
+            {dashboardLoading ? "Loading dashboards..." : "Select a dashboard"}
+          </option>
+          {dashboards.map((dashboard) => (
+            <option key={dashboard.id} value={dashboard.id}>
+              {dashboard.name}
+            </option>
+          ))}
+        </select>
       </header>
+
+      {dashboardError && (
+        <div className="message error dashboard-error">
+          <div className="message-label">Dashboard list error</div>
+          <div className="message-body">{dashboardError}</div>
+        </div>
+      )}
 
       <div className="messages">
         {messages.map((message) => (
@@ -190,14 +315,14 @@ export default function App() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder="Ask about your data&#x2026;"
-            disabled={isLoading}
+            disabled={isLoading || !validDashboardId}
           />
           {isLoading ? (
             <button type="button" className="cancel-btn" onClick={stop} aria-label="Cancel">
               &#9632;
             </button>
           ) : (
-            <button type="submit" className="send-btn" disabled={!input.trim()} aria-label="Send">
+            <button type="submit" className="send-btn" disabled={!input.trim() || !validDashboardId} aria-label="Send">
               &#8593;
             </button>
           )}
