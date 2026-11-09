@@ -5,33 +5,33 @@ import type { DashboardScope, DashboardCardType } from "./metabase.js";
 
 async function logToolCall<T>(
   name: string,
+  dashboardId: number,
+  requestId: string,
   input: Record<string, unknown>,
   execute: () => Promise<T>,
 ): Promise<T> {
   const startedAt = Date.now();
-  const inputSummary = Object.fromEntries(
-    Object.entries(input).map(([key, value]) => [
-      key,
-      typeof value === "string"
-        ? "[redacted]"
-        : Array.isArray(value)
-          ? `[${value.length} items]`
-          : value !== null && typeof value === "object"
-            ? "[object]"
-            : value,
-    ]),
-  );
 
-  console.info(`[tool:${name}] started`, { input: inputSummary });
+  console.info(`[tool:${name}] started`, {
+    request_id: requestId,
+    dashboard_id: dashboardId,
+    input,
+  });
 
   try {
     const result = await execute();
     console.info(`[tool:${name}] completed`, {
+      request_id: requestId,
+      dashboard_id: dashboardId,
       duration_ms: Date.now() - startedAt,
+      output: result,
     });
     return result;
   } catch (error) {
     console.error(`[tool:${name}] failed`, {
+      request_id: requestId,
+      dashboard_id: dashboardId,
+      input,
       duration_ms: Date.now() - startedAt,
       error: error instanceof Error ? error.message : String(error),
     });
@@ -39,7 +39,7 @@ async function logToolCall<T>(
   }
 }
 
-export function createAgentTools(scope: DashboardScope) {
+export function createAgentTools(scope: DashboardScope, requestId: string) {
   const cardTypeSchema = z.enum(["question", "model", "metric"]);
 
   return {
@@ -59,6 +59,8 @@ export function createAgentTools(scope: DashboardScope) {
       execute: async ({ term_queries, semantic_queries }) =>
         logToolCall(
           "search_data_sources",
+          scope.id,
+          requestId,
           { term_queries, semantic_queries },
           () =>
             metabase.searchDashboard(scope, term_queries, semantic_queries),
@@ -75,12 +77,15 @@ export function createAgentTools(scope: DashboardScope) {
       execute: async ({ source_type, source_id }) =>
         logToolCall(
           "get_data_source_details",
+          scope.id,
+          requestId,
           { source_type, source_id },
           () =>
             metabase.getDashboardCardDetails(
               scope,
               source_type as DashboardCardType,
               source_id,
+              requestId,
             ),
         ),
     }),
@@ -96,6 +101,8 @@ export function createAgentTools(scope: DashboardScope) {
       execute: async ({ source_type, source_id, field_id }) =>
         logToolCall(
           "get_field_values",
+          scope.id,
+          requestId,
           { source_type, source_id, field_id },
           () =>
             metabase.getDashboardFieldValues(
@@ -103,6 +110,7 @@ export function createAgentTools(scope: DashboardScope) {
               source_type as DashboardCardType,
               source_id,
               field_id,
+              requestId,
             ),
       ),
     }),
@@ -127,14 +135,25 @@ export function createAgentTools(scope: DashboardScope) {
         .describe("Maximum rows to return (default: 100)"),
       }),
       execute: async ({ query, limit }) =>
-      logToolCall("run_query", { query, limit }, async () => {
-        await metabase.searchDashboard(
-          scope,
-          scope.cards.map((card) => card.name),
-        );
-        metabase.assertDashboardQuery(scope, query);
-        return metabase.executeQuery(query, limit);
-      }),
+        logToolCall(
+          "run_query",
+          scope.id,
+          requestId,
+          { query, limit },
+          async () => {
+            await metabase.searchDashboard(
+              scope,
+              scope.cards.map((card) => card.name),
+            );
+            const queryWithFieldTypes = await metabase.addDashboardFieldBaseTypes(
+              scope,
+              query,
+              requestId,
+            );
+            metabase.assertDashboardQuery(scope, queryWithFieldTypes);
+            return metabase.executeQuery(queryWithFieldTypes, limit);
+          },
+        ),
     }),
   };
 }

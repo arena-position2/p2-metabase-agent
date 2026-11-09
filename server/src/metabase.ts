@@ -1,3 +1,5 @@
+import { addFieldBaseTypes, containsStringFieldReference } from "./mbql.js";
+
 const METABASE_URL = () => process.env.METABASE_INSTANCE_URL!;
 const USERNAME = () => process.env.METABASE_USER_EMAIL!;
 const PASSWORD = () => process.env.METABASE_USER_PASSWORD!;
@@ -9,6 +11,7 @@ export interface DashboardCard {
   id: number;
   name: string;
   uri: string;
+  portableEntityId?: string;
 }
 
 export interface DashboardScope {
@@ -136,23 +139,45 @@ function asPortableTableSource(
   return [value[0], value[1], value[2]];
 }
 
-async function readResources(uris: string[]) {
-  if (uris.length > 5) {
-    throw new Error("Metabase read-resource accepts at most five URIs per request");
-  }
-
-  const result = await agentRequest("/v1/read-resource", {
-    method: "POST",
-    body: JSON.stringify({ uris }),
+async function readResources(uris: string[], requestId?: string) {
+  const startedAt = Date.now();
+  console.info("[metabase:read-resource] started", {
+    request_id: requestId,
+    input: { uris },
   });
-  if (!Array.isArray(result.resources)) {
-    throw new Error("Metabase read-resource response did not contain resources");
+
+  try {
+    if (uris.length > 5) {
+      throw new Error("Metabase read-resource accepts at most five URIs per request");
+    }
+
+    const result = await agentRequest("/v1/read-resource", {
+      method: "POST",
+      body: JSON.stringify({ uris }),
+    });
+    console.info("[metabase:read-resource] completed", {
+      request_id: requestId,
+      duration_ms: Date.now() - startedAt,
+      output: result,
+    });
+
+    if (!Array.isArray(result.resources)) {
+      throw new Error("Metabase read-resource response did not contain resources");
+    }
+    return result.resources;
+  } catch (error) {
+    console.error("[metabase:read-resource] failed", {
+      request_id: requestId,
+      input: { uris },
+      duration_ms: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
   }
-  return result.resources;
 }
 
-async function readResource(uri: string) {
-  const resources = await readResources([uri]);
+async function readResource(uri: string, requestId?: string) {
+  const resources = await readResources([uri], requestId);
 
   const resource = resources.find(
     (item: { uri?: string }) => item.uri === uri,
@@ -175,9 +200,12 @@ async function readResource(uri: string) {
   );
 }
 
-export async function loadDashboardScope(id: number): Promise<DashboardScope> {
+export async function loadDashboardScope(
+  id: number,
+  requestId?: string,
+): Promise<DashboardScope> {
   const resource = asRecord(
-    await readResource(`metabase://dashboard/${id}/items`),
+    await readResource(`metabase://dashboard/${id}/items`, requestId),
   );
   const rawCards = resource?.items;
 
@@ -224,7 +252,10 @@ export async function loadDashboardScope(id: number): Promise<DashboardScope> {
 
   for (let index = 0; index < cards.length; index += 5) {
     const batch = cards.slice(index, index + 5);
-    const resources = await readResources(batch.map((card) => card.uri));
+    const resources = await readResources(
+      batch.map((card) => card.uri),
+      requestId,
+    );
     for (const card of batch) {
       const resource = resources.find(
         (item: { uri?: string }) => item.uri === card.uri,
@@ -248,6 +279,7 @@ export async function loadDashboardScope(id: number): Promise<DashboardScope> {
       if (!portableEntityId) continue;
 
       if (card.type === "question" || card.type === "model") {
+        card.portableEntityId = portableEntityId;
         scope.cardSourceIds.add(portableEntityId);
       } else if (card.type === "metric") {
         const sourceCardId =
@@ -375,11 +407,12 @@ export async function getDashboardCardDetails(
   scope: DashboardScope,
   type: DashboardCardType,
   id: number,
+  requestId?: string,
 ) {
   const card = dashboardCard(scope, type, id);
   const detailsUri =
     type === "metric" ? `${card.uri}/dimensions` : `${card.uri}/fields`;
-  return readResource(detailsUri);
+  return readResource(detailsUri, requestId);
 }
 
 export async function getDashboardFieldValues(
@@ -387,13 +420,45 @@ export async function getDashboardFieldValues(
   type: DashboardCardType,
   entityId: number,
   fieldId: number,
+  requestId?: string,
 ) {
   const card = dashboardCard(scope, type, entityId);
   const uri =
     type === "metric"
       ? `${card.uri}/dimensions/${fieldId}`
       : `${card.uri}/fields/${fieldId}`;
-  return readResource(uri);
+  return readResource(uri, requestId);
+}
+
+export async function addDashboardFieldBaseTypes<T>(
+  scope: DashboardScope,
+  query: T,
+  requestId?: string,
+): Promise<T> {
+  if (!containsStringFieldReference(query)) return query;
+
+  const stages = asRecord(query)?.stages;
+  const firstStage = Array.isArray(stages) ? asRecord(stages[0]) : undefined;
+  const sourceCardId =
+    typeof firstStage?.["source-card"] === "string"
+      ? firstStage["source-card"]
+      : undefined;
+  const sourceCard = scope.cards.find(
+    (card) => card.portableEntityId === sourceCardId,
+  );
+  if (!sourceCard) {
+    throw new Error(
+      "String field references require a dashboard saved-card source with readable field metadata",
+    );
+  }
+
+  const metadata = await getDashboardCardDetails(
+    scope,
+    sourceCard.type,
+    sourceCard.id,
+    requestId,
+  );
+  return addFieldBaseTypes(query, metadata);
 }
 
 interface PortableQuery {

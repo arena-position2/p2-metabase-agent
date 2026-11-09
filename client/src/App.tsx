@@ -86,15 +86,23 @@ function getToolDetail(
   }
 }
 
+function formatToolValue(value: unknown): string {
+  return JSON.stringify(value, null, 2) ?? String(value);
+}
+
 function ToolCallStatus({
   toolName,
   state,
   input,
+  output,
+  errorText,
   entityNames,
 }: {
   toolName: string;
   state: string;
   input?: Record<string, unknown>;
+  output?: unknown;
+  errorText?: string;
   entityNames: EntityNames;
 }) {
   const label = TOOL_LABELS[toolName] ?? toolName;
@@ -105,6 +113,29 @@ function ToolCallStatus({
     <div className={`tool-card ${done ? "done" : "pending"}`}>
       <span className="tool-card-label">{label}</span>
       {detail && <span className="tool-card-detail">{detail}</span>}
+      {(input !== undefined || output !== undefined || errorText) && (
+        <details className="tool-card-details">
+          <summary>Show tool input and output</summary>
+          {input !== undefined && (
+            <section>
+              <strong>Input</strong>
+              <pre>{formatToolValue(input)}</pre>
+            </section>
+          )}
+          {output !== undefined && (
+            <section>
+              <strong>Output</strong>
+              <pre>{formatToolValue(output)}</pre>
+            </section>
+          )}
+          {errorText && (
+            <section>
+              <strong>Error</strong>
+              <pre>{errorText}</pre>
+            </section>
+          )}
+        </details>
+      )}
     </div>
   );
 }
@@ -114,7 +145,8 @@ export default function App() {
   const [dashboards, setDashboards] = useState<Dashboard[]>([]);
   const [dashboardLoading, setDashboardLoading] = useState(true);
   const [dashboardError, setDashboardError] = useState<string | null>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const [clientSessionId] = useState(() => crypto.randomUUID());
   const searchParams = new URLSearchParams(window.location.search);
   const initialDashboardId =
     searchParams.get("dashboardId") ?? searchParams.get("dashboard_id");
@@ -125,10 +157,13 @@ export default function App() {
       ? initialDashboardId
       : "",
   );
-  const validDashboardId = dashboards.some(
+  const selectedDashboard = dashboards.find(
     (dashboard) => String(dashboard.id) === dashboardId,
   );
+  const validDashboardId = selectedDashboard !== undefined;
   const entityNamesRef = useMemo<EntityNames>(() => ({}), [dashboardId]);
+  const chatId = `dashboard-${dashboardId || "missing"}`;
+  const conversationId = `${clientSessionId}:${chatId}`;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -195,13 +230,13 @@ export default function App() {
   const transport = useMemo(
     () => new DefaultChatTransport({
       api: "/api/chat",
-      body: { dashboardId },
+      body: { dashboardId, conversationId },
     }),
-    [dashboardId],
+    [dashboardId, conversationId],
   );
 
   const { messages, sendMessage, status, stop, error } = useChat({
-    id: `dashboard-${dashboardId ?? "missing"}`,
+    id: chatId,
     transport,
   });
 
@@ -210,7 +245,10 @@ export default function App() {
   const entityNames = entityNamesRef;
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const messagesContainer = messagesContainerRef.current;
+    if (messagesContainer) {
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
   }, [messages]);
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -255,7 +293,7 @@ export default function App() {
         </div>
       )}
 
-      <div className="messages">
+      <div className="messages" ref={messagesContainerRef}>
         {messages.map((message) => (
           <div key={message.id} className={`message ${message.role}`}>
             <div className="message-label">
@@ -276,12 +314,16 @@ export default function App() {
                     : part.type.replace("tool-", "");
                   const state = ("state" in part ? part.state : "input-available") as string;
                   const toolInput = ("input" in part ? part.input : undefined) as Record<string, unknown> | undefined;
+                  const toolOutput = "output" in part ? part.output : undefined;
+                  const toolError = "errorText" in part ? part.errorText : undefined;
                   return (
                     <ToolCallStatus
                       key={`${i}-${part.type}`}
                       toolName={toolName}
                       state={state}
                       input={toolInput}
+                      output={toolOutput}
+                      errorText={toolError}
                       entityNames={entityNames}
                     />
                   );
@@ -306,7 +348,6 @@ export default function App() {
           </div>
         )}
 
-        <div ref={messagesEndRef} />
       </div>
 
       <form className="input-area" onSubmit={handleSubmit}>

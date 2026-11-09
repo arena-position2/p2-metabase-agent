@@ -1,4 +1,5 @@
 import dotenv from "dotenv";
+import { randomUUID } from "node:crypto";
 import path from "path";
 import { fileURLToPath } from "url";
 import express from "express";
@@ -18,6 +19,12 @@ app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 
 const PORT = parseInt(process.env.SERVER_PORT || "3001");
+const conversationDashboardIds = new Map<
+  string,
+  { dashboardId: number; lastSeenAt: number }
+>();
+const CONVERSATION_CONTEXT_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_CONVERSATION_CONTEXTS = 500;
 
 // Verify required env vars
 const requiredEnvVars = [
@@ -88,30 +95,85 @@ app.get("/api/dashboards", async (_req, res) => {
 });
 
 app.post("/api/chat", async (req, res) => {
-  const { messages, dashboardId: rawDashboardId } = req.body;
+  const requestId = randomUUID();
+  res.setHeader("X-Request-ID", requestId);
+  const { messages, dashboardId: rawDashboardId, conversationId } = req.body;
 
   if (!messages || !Array.isArray(messages)) {
     res.status(400).json({ error: "Missing 'messages' array" });
     return;
   }
 
-  const dashboardId =
+  const parsedDashboardId =
     typeof rawDashboardId === "number"
       ? rawDashboardId
       : typeof rawDashboardId === "string" && /^\d+$/.test(rawDashboardId)
         ? Number(rawDashboardId)
-        : NaN;
-  if (!Number.isSafeInteger(dashboardId) || dashboardId <= 0) {
+        : undefined;
+  const hasDashboardId =
+    rawDashboardId !== undefined && rawDashboardId !== null && rawDashboardId !== "";
+  if (
+    hasDashboardId &&
+    (parsedDashboardId === undefined ||
+      !Number.isSafeInteger(parsedDashboardId) ||
+      parsedDashboardId <= 0)
+  ) {
     res.status(400).json({ error: "A valid 'dashboardId' is required" });
     return;
   }
 
+  const validConversationId =
+    typeof conversationId === "string" &&
+    conversationId.length > 0 &&
+    conversationId.length <= 200
+      ? conversationId
+      : undefined;
+  const now = Date.now();
+  for (const [id, context] of conversationDashboardIds) {
+    if (now - context.lastSeenAt > CONVERSATION_CONTEXT_TTL_MS) {
+      conversationDashboardIds.delete(id);
+    }
+  }
+
+  const rememberedContext = validConversationId
+    ? conversationDashboardIds.get(validConversationId)
+    : undefined;
+  const dashboardId = parsedDashboardId ?? rememberedContext?.dashboardId;
+  if (!dashboardId) {
+    res.status(400).json({
+      error:
+        "A valid 'dashboardId' is required unless this conversation already has dashboard context",
+    });
+    return;
+  }
+
+  console.info("[chat] dashboard context resolved", {
+    request_id: requestId,
+    conversation_id: validConversationId,
+    dashboard_id: dashboardId,
+    source: parsedDashboardId === undefined ? "remembered" : "request",
+    message_count: messages.length,
+  });
+
   try {
-    const scope = await loadDashboardScope(dashboardId);
+    const scope = await loadDashboardScope(dashboardId, requestId);
+    if (validConversationId) {
+      conversationDashboardIds.delete(validConversationId);
+      conversationDashboardIds.set(validConversationId, {
+        dashboardId,
+        lastSeenAt: Date.now(),
+      });
+      while (conversationDashboardIds.size > MAX_CONVERSATION_CONTEXTS) {
+        const oldestConversationId = conversationDashboardIds.keys().next().value;
+        if (oldestConversationId === undefined) break;
+        conversationDashboardIds.delete(oldestConversationId);
+      }
+    }
+
     const agent = new ToolLoopAgent({
       model: anthropic("claude-sonnet-5-5"),
       instructions: systemPrompt(scope.cards),
-      tools: createAgentTools(scope),
+      tools: createAgentTools(scope, requestId),
       stopWhen: stepCountIs(15),
     });
 
@@ -122,6 +184,7 @@ app.post("/api/chat", async (req, res) => {
     });
   } catch (error) {
     console.error("Dashboard chat failed", {
+      request_id: requestId,
       dashboard_id: dashboardId,
       error: error instanceof Error ? error.message : String(error),
     });

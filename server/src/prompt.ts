@@ -55,9 +55,9 @@ The run_query tool expects a query object in this format:
 \`\`\`
 
 - Copy the exact portable entity ID from dashboard-scoped search results into the first stage's \`source-card\`.
-- Use only fields present in that dashboard card's inspected result. A field from a saved-card source is referenced by its output column name, for example \`["field", {}, "AMOUNT"]\`.
-- Every clause has an options map: \`["operator", {}, ...args]\`. For example, count rows with \`["count", {}]\`, or sum a field with \`["sum", {}, ["field", {}, "AMOUNT"]]\`.
-- Use \`filters\` with clauses such as \`[">", {}, field_reference, 100]\`; use \`breakout\` for grouping and \`order-by\` for sorting.
+- Use only fields present in that dashboard card's inspected result. A field from a saved-card source is referenced by its output column name and the exact \`base_type\` returned for that field, for example \`["field", {"base-type": "<exact base_type from field metadata>"}, "AMOUNT"]\`. Never infer or hardcode a field type.
+- Every clause has an options map: \`["operator", {}, ...args]\`. For example, count rows with \`["count", {}]\`, or sum a field with \`["sum", {}, ["field", {"base-type": "<exact base_type from field metadata>"}, "AMOUNT"]]\`.
+- For every string-name field reference used in \`filters\`, \`aggregation\`, \`breakout\`, or \`order-by\`, include \`{"base-type": "<exact base_type from field metadata>"}\` in the field clause options. Use \`filters\` with clauses such as \`[">", {}, ["field", {"base-type": "<exact base_type from field metadata>"}, "AMOUNT"], 100]\`; use \`breakout\` for grouping and \`order-by\` for sorting.
 - For a dashboard metric, use its exact source from its search result: \`base_table_portable_fk\` as \`source-table\`, or \`source_card_portable_entity_id\` as \`source-card\`. Include \`["metric", {}, "<metric portable_entity_id>"]\` in the query aggregation.
 - Do not use joins or any source or metric that did not come from dashboard-scoped search.
 - Include a \`limit\` on the final stage (default 100).

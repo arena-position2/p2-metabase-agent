@@ -36,6 +36,8 @@ npm run dev
 
 Open [http://localhost:3100](http://localhost:3100). Choose a dashboard from the dropdown; its ID is stored in the URL as `dashboardId`, and chat is scoped to the selected dashboard. Query tools are read-only; dashboard edits are not available.
 
+Tool calls are logged by the server with their request ID, dashboard ID, input, output, duration, and errors. Dashboard `read-resource` requests and responses are logged as well. In the chat, expand **Show tool input and output** on a tool card to inspect the AI tool's input and response. These logs may contain query data, so protect server logs accordingly. Dashboard context is remembered in server memory for each conversation for up to 24 hours if a later request omits `dashboardId`; a server restart clears that fallback, and the client sends the selected dashboard ID on every request.
+
 ## Reporting issues
 
 For bugs and feature requests, please [open an issue](https://github.com/metabase/metabase-agent-api-demo/issues). For security issues, please see our [Security Policy](https://github.com/metabase/metabase/security/policy).
